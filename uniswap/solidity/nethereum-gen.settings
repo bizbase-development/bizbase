@@ -1,0 +1,7 @@
+{
+    "projectName": "Uniswap",
+    "namespace": "Uniswap.Contracts",
+    "lang": 0,
+    "autoCodeGen": true,
+    "projectPath": "../"
+}
