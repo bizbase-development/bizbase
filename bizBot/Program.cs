@@ -1,4 +1,4 @@
-using bizbase;
+﻿using bizbase;
 using ContractWrappers.Contracts.Bizbase;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
@@ -24,9 +24,15 @@ var cfg = JsonConvert.DeserializeObject<Config>(File.ReadAllText(configFile));
 var errorFile = $"files{Path.DirectorySeparatorChar}errlog.txt";
 var bzbFile = $"files{Path.DirectorySeparatorChar}bzbdat.json";
 
+var bzbFile_old = $"files{Path.DirectorySeparatorChar}bzbdat_old.json";
+
 
 if (!File.Exists(bzbFile) || File.ReadAllText(bzbFile).Length < 1)
 	File.WriteAllText(bzbFile, JsonConvert.SerializeObject(new List<IntervalData>(), Formatting.Indented));
+
+List<IntervalData> intervals_old = new List<IntervalData>();
+if(File.Exists(bzbFile_old))
+	intervals_old = JsonConvert.DeserializeObject<List<IntervalData>>(File.ReadAllText(bzbFile_old));
 var intervals = JsonConvert.DeserializeObject<List<IntervalData>>(File.ReadAllText(bzbFile));
 
 async Task updatePostCount() {
@@ -43,9 +49,16 @@ async Task updatePostCount() {
 		.Max(r => r.no);
 		//.First(th => th.closed != 1 && th.replies != 0).last_replies.Last().no;
 	var currentPostCount = -1;
-	if (intervals.Count != 0 && (DateTime.UtcNow - intervals.Last().Time) < TimeSpan.FromHours(36))
-		if (!cfg.Debug_MinuteRun || (DateTime.UtcNow - intervals.Last().Time) < TimeSpan.FromSeconds(90))
-			currentPostCount = currentLastPostNumber - intervals.Last().PostNumber;
+
+	IntervalData lastInterval = null;
+	if (intervals.Count != 0)
+		lastInterval = intervals.Last();
+	else if (intervals_old.Count != 0)
+		lastInterval = intervals_old.Last();
+
+	if (lastInterval != null && DateTime.UtcNow - lastInterval.Time < TimeSpan.FromHours(36))
+		if (!cfg.Debug_MinuteRun || (DateTime.UtcNow - lastInterval.Time) < TimeSpan.FromSeconds(90))
+			currentPostCount = currentLastPostNumber - lastInterval.PostNumber;
 	intervals.Add(new IntervalData() {
 		Time = DateTime.Now, PostNumber = currentLastPostNumber, PostCount = currentPostCount
 	});
@@ -53,10 +66,21 @@ async Task updatePostCount() {
 	//File.WriteAllText(bzbFile, JsonConvert.SerializeObject(intervals, Formatting.Indented));
 }
 void refreshJsonVolumeData() {
-	var labels = intervals.Skip(1).Select(iv => iv.Time.ToString("MMM-d"));
-	var data = intervals.Skip(1).Select(iv => iv.PostCount);
-	var json = new { labels = labels, data = data };
+	var intervalsWihOldData = intervals_old.Concat(intervals);
+
+	var labels_OldDat = intervalsWihOldData.Skip(1).Select(iv => iv.Time.ToString("MMM-d"));
+	var data = intervalsWihOldData.Skip(1).Select(iv => iv.PostCount);
+	var json = new { labels = labels_OldDat, data = data };
 	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}volumedata.json", JsonConvert.SerializeObject(json));
+
+	var labels_CurrentDat = intervals.Select(intv => intv.Time.ToString("MMM-d"));
+	var tsData = intervals.Select(intv => intv.TotalSupplyAfter);
+	var json_TS = new { labels = labels_CurrentDat, data = tsData };
+	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}supply.json", JsonConvert.SerializeObject(json_TS));
+
+	var data_marketCap = intervals.Select(intv => intv.TotalSupplyAfter * intv.PostPrice);
+	var json_marketCap = new { labels = labels_CurrentDat, data = data_marketCap };
+	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcap.json", JsonConvert.SerializeObject(json_marketCap));
 }
 
 while (true) {
