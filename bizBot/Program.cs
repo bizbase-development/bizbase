@@ -1,8 +1,9 @@
-﻿using bizbase;
+using bizbase;
 using ContractWrappers.Contracts.Bizbase;
 using Nethereum.Web3;
 using Nethereum.Web3.Accounts;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -81,6 +82,10 @@ void refreshJsonVolumeData() {
 	var data_marketCap = intervals.Select(intv => intv.TotalSupplyAfter * intv.PostPrice);
 	var json_marketCap = new { labels = labels_CurrentDat, data = data_marketCap };
 	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcap.json", JsonConvert.SerializeObject(json_marketCap));
+
+	var data_marketCapETH = intervals.Select(intv => intv.TotalSupplyAfter * intv.PostPriceETH);
+	var json_marketCapETH = new { labels = labels_CurrentDat, data = data_marketCapETH };
+	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcapETH.json", JsonConvert.SerializeObject(json_marketCapETH));
 }
 
 while (true) {
@@ -107,6 +112,8 @@ while (true) {
 			
 			intervals[intervals.Count - 1].PrePrice = dat.prePrice;
 			intervals[intervals.Count - 1].PostPrice = dat.postPrice;
+			intervals[intervals.Count - 1].PrePriceETH = dat.prePriceETH;
+			intervals[intervals.Count - 1].PostPriceETH = dat.postPriceETH;
 			intervals[intervals.Count - 1].TotalSupplyBefore = dat.totalSupplyBefore;
 			intervals[intervals.Count - 1].TotalSupplyAfter = dat.totalSupplyAfter;
 			intervals[intervals.Count - 1].SupplyDelta = dat.supplyDelta;
@@ -122,13 +129,21 @@ while (true) {
 }
 
 
-async Task<(decimal prePrice, decimal postPrice, decimal totalSupplyBefore, decimal totalSupplyAfter, decimal supplyDelta)> updateContract(int postCount) {
+async Task<(decimal prePrice, decimal postPrice, decimal prePriceETH, decimal postPriceETH, decimal totalSupplyBefore, decimal totalSupplyAfter, decimal supplyDelta)> updateContract(int postCount) {
 	var addresses = ETHAddressCollection.ByNetwork(cfg.Network);
+
+	using var hc = new HttpClient();
+	var getGasPriceResonseAsync = hc.GetAsync(
+		"https://data-api.defipulse.com/api/v1/egs/api/ethgasAPI.json?api-key=ed13e4b17ccab4cca1918a5389276534c6c8095ad9fd31923c33dd64be1a"
+	);
+	////https://data-api.defipulse.com/api/v1/egs/api/ethgasAPI.json?api-key=ed13e4b17ccab4cca1918a5389276534c6c8095ad9fd31923c33dd64be1a
+	//var getGasPrices 
 
 	var account = new Account(new string(cfg.PrivateKey.Reverse().ToArray()));
 	var web3 = new Web3(account, cfg.InfuraURL);
-
+	
 	var serv = new BizbaseService(web3, cfg.ContractAddress);
+	//web3.TransactionManager.DefaultGasPrice
 	var totalSupply = await serv.TotalSupplyQueryAsync().ToDec9d();
 	var router = new UniswapV2Router02Service(web3, addresses.UniswapRouter);
 
@@ -140,6 +155,7 @@ async Task<(decimal prePrice, decimal postPrice, decimal totalSupplyBefore, deci
 	var _amountsOut = await router.GetAmountsOutQueryAsync(
 		1m.ToBigInt9d(), wethDai_path
 	);
+	var priceETH = _amountsOut[1].ToDec();
 	var price = _amountsOut.Last().ToDec();
 
 	var supplyDelta = CalculateSupplyDelta(
@@ -150,14 +166,31 @@ async Task<(decimal prePrice, decimal postPrice, decimal totalSupplyBefore, deci
 	);
 	supplyDelta /= cfg.DampeningFactor;
 
+	try {
+		var gasPriceResponse = await getGasPriceResonseAsync;
+		var gasPriceJToken = JsonConvert.DeserializeObject<JToken>(await gasPriceResponse.Content.ReadAsStringAsync());
+		var gasprice = int.Parse(gasPriceJToken[cfg.gasPricePriority].ToString()) / 10;
+		if (gasprice > cfg.maxGasPrice) gasprice = int.Parse(gasPriceJToken["safeLow"].ToString()) / 10;
+		if (gasprice > cfg.maxGasPrice) gasprice = cfg.maxGasPrice;
+		web3.Eth.TransactionManager.DefaultGasPrice = (UInt64)gasprice * 1_000_000_000ul;
+	} catch {
+		web3.Eth.TransactionManager.DefaultGasPrice = -1;
+	}
+	
+
 	await serv.RebaseRequestAndWaitForReceiptAsync(supplyDelta.ToBigInt9d());
+
+	var blockNumber = await web3.Eth.Blocks.GetBlockNumber.SendRequestAsync();
+	while ((await web3.Eth.Blocks.GetBlockNumber.SendRequestAsync()) == blockNumber) await Task.Delay(1000);
+	await Task.Delay(2000);
 
 	_amountsOut = await router.GetAmountsOutQueryAsync(
 		1m.ToBigInt9d(), wethDai_path
 	);
-	var pricePost = _amountsOut.Last().ToDec();
+	var postPrice = _amountsOut.Last().ToDec();
+	var postPriceETH = _amountsOut[1].ToDec();
 	var totalSupplyPost = await serv.TotalSupplyQueryAsync().ToDec9d();
-	return (price, pricePost, totalSupply, totalSupplyPost, supplyDelta);
+	return (price, postPrice, priceETH, postPriceETH, totalSupply, totalSupplyPost, supplyDelta);
 }
 
 decimal CalculateSupplyDelta(decimal totalySupply, decimal price, decimal oneDollarTargetPostCount, decimal postCount) {
@@ -177,6 +210,9 @@ public class IntervalData {
 	public decimal TotalSupplyBefore;
 	public decimal TotalSupplyAfter;
 	public decimal SupplyDelta;
+
+	public decimal PrePriceETH;
+	public decimal PostPriceETH;
 }
 public class BizBaseData {
 	public List<IntervalData> Intervals = new List<IntervalData>();
@@ -193,5 +229,8 @@ public class Config {
 	public bool Debug_MinuteRun = false;
 	public int DampeningFactor = 10;
 	public int RebaseHourUTC = 18;
+	public string gasPricePriority = "average";
+	public int maxGasPrice = 300;
 }
+
 
