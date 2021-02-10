@@ -8,9 +8,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Threading.Tasks;
 using Uniswap.Contracts.UniswapV2Router02;
+
 
 
 if (!Directory.Exists("files")) Directory.CreateDirectory("files");
@@ -20,7 +23,6 @@ if (!Directory.Exists("webserver")) Directory.CreateDirectory("webserver");
 var configFile = $"files{Path.DirectorySeparatorChar}config.json";
 //File.WriteAllText(configFile, JsonConvert.SerializeObject(new Config(), Formatting.Indented));
 var cfg = JsonConvert.DeserializeObject<Config>(File.ReadAllText(configFile));
-
 
 var errorFile = $"files{Path.DirectorySeparatorChar}errlog.txt";
 var bzbFile = $"files{Path.DirectorySeparatorChar}bzbdat.json";
@@ -66,28 +68,46 @@ async Task updatePostCount() {
 
 	//File.WriteAllText(bzbFile, JsonConvert.SerializeObject(intervals, Formatting.Indented));
 }
-void refreshJsonVolumeData() {
+
+async Task refreshJsonVolumeData() {
+	async Task uploadFile(string fileName, string content) {
+		FtpWebRequest request = (FtpWebRequest)WebRequest.Create(cfg.rootPath + fileName);
+		request.Method = WebRequestMethods.Ftp.UploadFile;
+		request.Credentials = new NetworkCredential(cfg.hostUsername, cfg.hostPassword);
+		request.ContentLength = content.Length;
+		using (var stream = await request.GetRequestStreamAsync()) {
+			var bytes = Encoding.UTF8.GetBytes(content);
+			await stream.WriteAsync(bytes, 0, bytes.Length);
+		}
+	}
+
 	var intervalsWihOldData = intervals_old.Concat(intervals);
 
 	var labels_OldDat = intervalsWihOldData.Skip(1).Select(iv => iv.Time.ToString("MMM-d"));
 	var data = intervalsWihOldData.Skip(1).Select(iv => iv.PostCount);
 	var json = new { labels = labels_OldDat, data = data };
-	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}volumedata.json", JsonConvert.SerializeObject(json));
+	//File.WriteAllText($"webserver{Path.DirectorySeparatorChar}volumedata.json", JsonConvert.SerializeObject(json));
+	await uploadFile("volumedata.json", JsonConvert.SerializeObject(json));
 
 	var labels_CurrentDat = intervals.Select(intv => intv.Time.ToString("MMM-d"));
 	var tsData = intervals.Select(intv => intv.TotalSupplyAfter);
 	var json_TS = new { labels = labels_CurrentDat, data = tsData };
-	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}supply.json", JsonConvert.SerializeObject(json_TS));
+	//File.WriteAllText($"webserver{Path.DirectorySeparatorChar}supply.json", JsonConvert.SerializeObject(json_TS));
+	await uploadFile("supply.json", JsonConvert.SerializeObject(json_TS));
 
 	var data_marketCap = intervals.Select(intv => intv.TotalSupplyAfter * intv.PostPrice);
 	var json_marketCap = new { labels = labels_CurrentDat, data = data_marketCap };
-	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcap.json", JsonConvert.SerializeObject(json_marketCap));
+	//File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcap.json", JsonConvert.SerializeObject(json_marketCap));
+	await uploadFile("marketcap.json", JsonConvert.SerializeObject(json_marketCap));
 
 	var data_marketCapETH = intervals.Select(intv => intv.TotalSupplyAfter * intv.PostPriceETH);
 	var json_marketCapETH = new { labels = labels_CurrentDat, data = data_marketCapETH };
-	File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcapETH.json", JsonConvert.SerializeObject(json_marketCapETH));
+	//File.WriteAllText($"webserver{Path.DirectorySeparatorChar}marketcapETH.json", JsonConvert.SerializeObject(json_marketCapETH));
+	await uploadFile("marketcapETH.json", JsonConvert.SerializeObject(json_marketCapETH));
 }
 
+if(!cfg.Debug_MinuteRun)
+	await refreshJsonVolumeData();
 while (true) {
 	try {
 		//await updateContract(50);
@@ -119,7 +139,7 @@ while (true) {
 			intervals[intervals.Count - 1].SupplyDelta = dat.supplyDelta;
 
 			if (intervals.Last().PrePrice == 0m) { }
-			refreshJsonVolumeData();
+			await refreshJsonVolumeData();
 		}
 
 		File.WriteAllText(bzbFile, JsonConvert.SerializeObject(intervals, Formatting.Indented));
@@ -231,6 +251,10 @@ public class Config {
 	public int RebaseHourUTC = 18;
 	public string gasPricePriority = "average";
 	public int maxGasPrice = 300;
+
+	public string rootPath;
+	public string hostUsername;
+	public string hostPassword;
 }
 
 
